@@ -40,7 +40,6 @@ case $OLD_VMID in
     ;;
 esac
 
-
 # Überprüfen, ob die VM läuft
 if qm status "$OLD_VMID" 2>/dev/null | grep -q running || pct status "$OLD_VMID" 2>/dev/null | grep -q running; then
     echo -e "${RED}Fehler: Die VM mit der ID $OLD_VMID läuft noch. Bitte stoppen Sie sie zuerst.${NC}"
@@ -112,6 +111,59 @@ if [ -n "$zfs_volumes" ]; then
 else
   echo -e "${YELLOW}Keine ZFS-Volumes für VMID $OLD_VMID gefunden.${NC}"
 fi
+
+# NEU: qcow2-Dateien auf lokalem Speicher umbenennen
+echo -e "${YELLOW}Überprüfe qcow2-Dateien für VMID $OLD_VMID...${NC}"
+
+# Standardpfade für Proxmox-Speicher
+STORAGE_PATHS=("/var/lib/vz/images" "/var/lib/vz/private")
+
+for storage_path in "${STORAGE_PATHS[@]}"; do
+    if [ -d "$storage_path/$OLD_VMID" ]; then
+        echo -e "${GREEN}Gefunden: $storage_path/$OLD_VMID${NC}"
+        
+        # Neues Verzeichnis erstellen falls nicht vorhanden
+        if [ ! -d "$storage_path/$NEW_VMID" ]; then
+            mkdir -p "$storage_path/$NEW_VMID"
+        fi
+        
+        # Alle Dateien im alten VMID-Verzeichnis umbenennen
+        for old_file in "$storage_path/$OLD_VMID"/*; do
+            if [ -f "$old_file" ]; then
+                filename=$(basename "$old_file")
+                new_filename="${filename//"vm-${OLD_VMID}"/"vm-${NEW_VMID}"}"
+                new_file="$storage_path/$NEW_VMID/$new_filename"
+                
+                echo -e "${YELLOW}Verschiebe $old_file zu $new_file${NC}"
+                if ! mv "$old_file" "$new_file"; then
+                    echo -e "${RED}Fehler beim Verschieben von $old_file zu $new_file${NC}"
+                    exit 1
+                fi
+            fi
+        done
+        
+        # Altes Verzeichnis löschen falls leer
+        if [ -d "$storage_path/$OLD_VMID" ] && [ -z "$(ls -A "$storage_path/$OLD_VMID")" ]; then
+            rmdir "$storage_path/$OLD_VMID"
+            echo -e "${GREEN}Altes Verzeichnis $storage_path/$OLD_VMID gelöscht${NC}"
+        fi
+    fi
+done
+
+# Zusätzlich: Suche nach qcow2-Dateien in allen lokalen Speicherpfaden
+echo -e "${YELLOW}Suche nach weiteren qcow2-Dateien...${NC}"
+find /var/lib/vz -name "*vm-${OLD_VMID}-disk*" -type f 2>/dev/null | while read -r old_file; do
+    dir=$(dirname "$old_file")
+    filename=$(basename "$old_file")
+    new_filename="${filename//"vm-${OLD_VMID}"/"vm-${NEW_VMID}"}"
+    new_file="$dir/$new_filename"
+    
+    echo -e "${YELLOW}Gefunden: $old_file -> $new_file${NC}"
+    if ! mv "$old_file" "$new_file"; then
+        echo -e "${RED}Fehler beim Umbenennen von $old_file zu $new_file${NC}"
+        exit 1
+    fi
+done
 
 echo -e "${YELLOW}Aktualisiere Konfigurationsdateien...${NC}"
 if [ ! -f "/etc/pve/$VM_TYPE/$OLD_VMID.conf" ]; then
